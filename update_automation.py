@@ -72,7 +72,7 @@ def create_update_folder(project_name='', default_root='updates', conf_path='upd
                     update_path = path_str
                     break
 
-    today_str = datetime.today().strftime('%Y-%m-%d')
+    today_str = datetime.today().strftime('%d-%m-%Y')
     if project_name:
         folder_name = f"update-{project_name}-{today_str}"
     else:
