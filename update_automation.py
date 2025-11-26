@@ -26,6 +26,26 @@ def get_staged_files():
         print("Error: This directory is not a Git repository or Git is not installed.")
         return []
 
+def get_files_between_commits(commit1, commit2):
+    """Return a list of files changed between two commits and print them."""
+    print(f"Preparing update for changes from {commit1} → {commit2}")
+    try:
+        result = subprocess.run(
+            ['git', 'diff', '--name-only', commit1, commit2],
+            capture_output=True, text=True, check=True
+        )
+        files = [f for f in result.stdout.strip().splitlines() if f]
+        if files:
+            print(f"Detected {len(files)} files changed between {commit1} and {commit2}:")
+            for f in files:
+                print(f)
+        else:
+            print(f"No files changed between {commit1} and {commit2}.")
+        return files
+    except subprocess.CalledProcessError:
+        print("Error: invalid commits or not a Git repository.")
+        return []
+
 # ------------------- Path Utilities -------------------
 def path_to_folder_name(file_path):
     """Convert a file path to a single-level folder name by replacing all slashes with '_'."""
@@ -52,7 +72,7 @@ def create_update_folder(project_name='', default_root='updates', conf_path='upd
                     update_path = path_str
                     break
 
-    today_str = datetime.today().strftime('%d-%m-%Y')
+    today_str = datetime.today().strftime('%Y-%m-%d')
     if project_name:
         folder_name = f"update-{project_name}-{today_str}"
     else:
@@ -71,9 +91,9 @@ def create_update_folder(project_name='', default_root='updates', conf_path='upd
     return unique_path
 
 # ------------------- Copy Files -------------------
-def copy_files_to_update(staged_files, update_folder):
-    """Copy each staged file into a folder inside update_folder."""
-    for file_path in staged_files:
+def copy_files_to_update(files, update_folder):
+    """Copy each file into a folder inside update_folder."""
+    for file_path in files:
         if not os.path.exists(file_path):
             print(f"Warning: {file_path} does not exist. Skipping.")
             continue
@@ -119,9 +139,9 @@ def zip_update_folder(update_folder):
 def parse_args():
     parser = argparse.ArgumentParser(
         description="""
-Prepare an update package from staged Git files.
+Prepare an update package from staged Git files or between two commits.
 
-This script requires Git. It detects staged files,
+This script requires Git. It detects staged files or files between commits,
 copies them into a structured update folder, and prepares them for deployment.
 
 By default, the update folder is: project_root/updates/update-YYYY-MM-DD
@@ -134,7 +154,11 @@ update_path='C://Your/Path'
         help='Optional project name to include in folder and zip (e.g., AVMIS)'
     )
     parser.add_argument(
-        '-v', '--version', action='version', version='Update Preparer 1.3'
+        '-c', '--commits', nargs=2, metavar=('COMMIT1', 'COMMIT2'),
+        help='Optional: provide two commit hashes to prepare update of all changed files between them'
+    )
+    parser.add_argument(
+        '-v', '--version', action='version', version='Update Preparer 1.4'
     )
     return parser.parse_args()
 
@@ -149,9 +173,15 @@ if __name__ == "__main__":
     else:
         project_name = args.project.strip()
 
-    staged_files = get_staged_files()
-    if staged_files:
+    # Decide which files to prepare
+    if args.commits:
+        commit1, commit2 = args.commits
+        files_to_prepare = get_files_between_commits(commit1, commit2)
+    else:
+        files_to_prepare = get_staged_files()
+
+    if files_to_prepare:
         update_folder = create_update_folder(project_name=project_name)
-        copy_files_to_update(staged_files, update_folder)
+        copy_files_to_update(files_to_prepare, update_folder)
         print(f"\nUpdate prepared in: {update_folder}")
         zip_update_folder(update_folder)
