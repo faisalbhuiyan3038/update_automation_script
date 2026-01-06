@@ -46,12 +46,96 @@ def get_files_between_commits(commit1, commit2):
         print("Error: invalid commits or not a Git repository.")
         return []
 
+# ------------------- SQL File Handling -------------------
+def get_sql_changes(file_path, commit1=None, commit2=None):
+    """
+    Extract only the actual changed content from SQL files.
+    Returns the changed lines without git diff markers.
+    """
+    try:
+        if commit1 and commit2:
+            # Get diff between two commits with only added lines
+            result = subprocess.run(
+                ['git', 'diff', commit1, commit2, '--', file_path],
+                capture_output=True, text=True, check=True
+            )
+        else:
+            # Get diff for staged changes with only added lines
+            result = subprocess.run(
+                ['git', 'diff', '--cached', '--', file_path],
+                capture_output=True, text=True, check=True
+            )
+        
+        diff_content = result.stdout
+        return extract_changed_lines(diff_content)
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: Could not generate diff for {file_path}: {e}")
+        return None
+
+def extract_changed_lines(diff_content):
+    """
+    Extract only the changed lines (added lines) from git diff output.
+    Filters out git diff headers and context lines, preserving actual content.
+    """
+    if not diff_content or not diff_content.strip():
+        return None
+    
+    lines = diff_content.split('\n')
+    changed_lines = []
+    
+    for line in lines:
+        # Skip diff headers and metadata
+        if line.startswith('diff --git') or line.startswith('index ') or \
+           line.startswith('--- ') or line.startswith('+++ ') or \
+           line.startswith('@@'):
+            continue
+        
+        # Extract added lines (lines starting with + but not ++)
+        if line.startswith('+') and not line.startswith('+++'):
+            # Remove the + prefix
+            content_line = line[1:]
+            changed_lines.append(content_line)
+    
+    # Join lines and strip leading/trailing whitespace from the entire content
+    result = '\n'.join(changed_lines)
+    # Remove leading empty lines and standalone semicolons at the start
+    result = result.lstrip('\n ;')
+    
+    return result if result.strip() else None
+
+def save_sql_changes(file_path, changed_content, dest_file_path):
+    """
+    Save only the changed SQL content to the destination file.
+    """
+    if not changed_content or not changed_content.strip():
+        print(f"Warning: No changes found for {file_path}")
+        return False
+    
+    # Create a header comment
+    header = f"""--
+-- SQL CHANGES: {file_path}
+-- This file contains only the changed content for this SQL file
+-- Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+-- 
+
+"""
+    
+    with open(dest_file_path, 'w', encoding='utf-8') as f:
+        f.write(header)
+        f.write(changed_content)
+    
+    return True
+
 # ------------------- Path Utilities -------------------
 def path_to_folder_name(file_path):
     """Convert a file path to a single-level folder name by replacing all slashes with '_'."""
     dir_path = os.path.dirname(file_path)
     folder_name = dir_path.replace('/', '_').replace('\\', '_')
     return folder_name
+
+def is_sql_file(file_path):
+    """Check if the file is a SQL file based on extension."""
+    return file_path.lower().endswith('.sql')
 
 # ------------------- Update Folder -------------------
 def create_update_folder(project_name='', default_root='updates', conf_path='update.conf'):
@@ -91,7 +175,7 @@ def create_update_folder(project_name='', default_root='updates', conf_path='upd
     return unique_path
 
 # ------------------- Copy Files -------------------
-def copy_files_to_update(files, update_folder):
+def copy_files_to_update(files, update_folder, commit1=None, commit2=None):
     """Copy each file into a folder inside update_folder."""
     for file_path in files:
         if not os.path.exists(file_path):
@@ -104,8 +188,22 @@ def copy_files_to_update(files, update_folder):
 
         file_name = os.path.basename(file_path)
         dest_file_path = os.path.join(dest_folder, file_name)
-        shutil.copy2(file_path, dest_file_path)
-        print(f"Copied {file_path} → {dest_file_path}")
+        
+        if is_sql_file(file_path):
+            # Handle SQL files specially - extract only changed content
+            print(f"Extracting changed content for {file_path}...")
+            changed_content = get_sql_changes(file_path, commit1, commit2)
+            if changed_content:
+                if save_sql_changes(file_path, changed_content, dest_file_path):
+                    print(f"Created SQL changes file: {dest_file_path}")
+                else:
+                    print(f"Warning: Failed to save SQL changes for {file_path}")
+            else:
+                print(f"Warning: No changes found for SQL file {file_path}, skipping.")
+        else:
+            # Handle non-SQL files normally
+            shutil.copy2(file_path, dest_file_path)
+            print(f"Copied {file_path} → {dest_file_path}")
 
 # ------------------- Zip Update Folder -------------------
 def zip_update_folder(update_folder):
@@ -147,6 +245,10 @@ copies them into a structured update folder, and prepares them for deployment.
 By default, the update folder is: project_root/updates/update-YYYY-MM-DD
 You can override this by creating 'update.conf' in the script directory with:
 update_path='C://Your/Path'
+
+IMPORTANT: For SQL files, this script extracts only the changed content
+instead of copying the entire file. The SQL files will contain only the
+new or modified lines, making them suitable for incremental updates.
 """
     )
     parser.add_argument(
@@ -158,7 +260,7 @@ update_path='C://Your/Path'
         help='Optional: provide two commit hashes to prepare update of all changed files between them'
     )
     parser.add_argument(
-        '-v', '--version', action='version', version='Update Preparer 1.4'
+        '-v', '--version', action='version', version='Update Preparer 1.8 (SQL Changes Support)'
     )
     return parser.parse_args()
 
@@ -178,10 +280,12 @@ if __name__ == "__main__":
         commit1, commit2 = args.commits
         files_to_prepare = get_files_between_commits(commit1, commit2)
     else:
+        commit1 = None
+        commit2 = None
         files_to_prepare = get_staged_files()
 
     if files_to_prepare:
         update_folder = create_update_folder(project_name=project_name)
-        copy_files_to_update(files_to_prepare, update_folder)
+        copy_files_to_update(files_to_prepare, update_folder, commit1, commit2)
         print(f"\nUpdate prepared in: {update_folder}")
         zip_update_folder(update_folder)
